@@ -1,145 +1,111 @@
-const url = require('url');
-const conf = require('rc')(
+import chalk from 'chalk';
+import rc from 'rc';
+import p from 'prompt-sync';
+import {wire, state} from './lib.js';
+import {createRequire} from 'node:module';
+const require = createRequire(import.meta.url);
+const conf = rc(
     require('./package.json').name,
     {}
 );
+const prompt = p();
 
-const wire = ({
-    registry: {
-        endpoint,
-        auth
+const w = wire(conf);
+const currentState = state(w);
+
+// screens
+const selectRepo = async(state) => {
+    console.log(chalk.white('Please select repo\n'));
+    state.set('tree', await w.tree());
+    const validAnswers = [];
+    state.get('tree')
+        .map(({name, tags, manifests, ...rest}, idx) => {
+            if (tags && tags.length) {
+                validAnswers.push(idx);
+                console.log(chalk.green(`${idx + 1}. ${name}`));
+            } else {
+                console.log(chalk.red(`N/A. ${name}`));
+            }
+        });
+    const ans = prompt('Repo number ? ');
+    if (validAnswers.indexOf(parseInt(ans) - 1) > -1) {
+        state.set('step', 'selectTag');
+        state.set('selection', ans - 1);
+    } else {
+        state.set('step', 'selectRepo');
+        state.set('selection', undefined);
     }
-}) => {
+    recall(state);
+};
+
+const selectTag = async(state) => {
     const {
-        protocol
-    } = new url.URL(endpoint);
-    const media = (protocol.startsWith('http:') &&
-        require('http')) || require('https');
-    const call = ({
-        method,
-        uri,
-        headers = {}
-    }) => new Promise((resolve, reject) => {
-        const req = media
-            .request(`${endpoint}${uri}`, {
-                auth,
-                method: method.toUpperCase(),
-                headers
-            }, (res) => {
-                let data = Buffer.from([]);
-                res.on('data', (d) =>
-                    (data = Buffer.concat([data, d]))
-                );
-                res.on('error', (e) =>
-                    reject(e)
-                );
-                res.on('end', () => {
-                    const {errors, ...response} = (
-                        data.length && JSON.parse(data.toString('utf8'))
-                    ) || {};
-                    if (errors) {
-                        return reject(errors);
-                    }
-                    resolve({
-                        payload: response,
-                        headers: res.headers
-                    });
-                });
-            });
-        req.end();
-    });
-
-    const o = {
-        catalog: async() => (await call({
-            method: 'get',
-            uri: '/v2/_catalog'
-        })).payload,
-        tags: (repo) => ({
-            get: async() => (await call({
-                method: 'get',
-                uri: `/v2/${repo}/tags/list`
-            })).payload,
-            delete: async() => ({})
-        }),
-        manifests: ({repo, tag, arch}) => ({
-            get: async({headers} = {}) => await call({
-                method: 'get',
-                uri: `/v2/${repo}/manifests/${tag}`,
-                headers: headers || {
-                    Accept: 'application/vnd.docker.distribution.manifest.v2+json'
-                }
-            }),
-            delete: async() => {
-                const {headers: {'docker-content-digest': digest}} = await o
-                    .manifests({repo, tag})
-                    .get();
-                return await call({
-                    method: 'delete',
-                    uri: `/v2/${repo}/manifests/${digest}`
-                });
-            }
-        }),
-        blobs: ({repo, tag, arch} = {}) => ({
-            delete: async() => ({}),
-            get: async() => ({})
-        }),
-        tree: async() => await Promise.all(
-            (await o.catalog())
-                .repositories
-                .map(async(repo) => {
-                    const {tags, ...rest} = await o.tags(repo).get();
-                    const manifests = tags && await Promise.all(tags.map(
-                        async(tag) => await o.manifests({repo, tag}).get()
-                    ));
-                    return {
-                        ...rest,
-                        tags,
-                        manifests
-                    };
-                })
-        )
-    };
-    return o;
+        name: repo,
+        tags
+    } = state.get('tree')[state.get('selection')];
+    console.log(chalk.white(`Please select tag for repo: ${repo}\n`));
+    const validAnswers = [];
+    tags
+        .map((tag, idx) => {
+            console.log(chalk.green(`${idx + 1}. ${tag}`));
+            validAnswers.push(idx);
+        });
+    const ans = prompt('Tag number ? ');
+    if (validAnswers.indexOf(parseInt(ans) - 1) > -1) {
+        state.set('step', 'manifests');
+        state.set('selection', [state.get('selection'), ans - 1]);
+    } else {
+        state.set('step', 'selectTag');
+    }
+    recall(state);
 };
-const state = () => {
-    const s = {tree: []};
 
-    const o = {
-        init({
-            tree
-        }) {
-            if (tree) {
-                s.tree = tree;
-            }
-        },
-        get(key) {
-            return s[key];
+const manifests = async(state) => {
+    const [repoIdx, tagIdx] = state.get('selection');
+    const {
+        name: repo,
+        tags,
+        manifests
+    } = state.get('tree')[repoIdx];
+    console.log(chalk.white(`Manifest for: ${repo}:${tags[tagIdx]}\n`));
+    const validAnswers = ['delete', 'home'];
+    console.log(chalk.yellow(JSON.stringify(manifests[tagIdx].payload, null, 4)));
+    const ans = prompt('what to do ? \n type delete (to delete the manifest) or home (to go to init screen)');
+    if (validAnswers.indexOf(ans) > -1) {
+        if (ans === 'delete') {
+            await (w.manifests({
+                repo,
+                tag: tags[tagIdx],
+                arch: 'amd64'
+            })).delete();
         }
-    };
-    return o;
+        state.set('step', 'selectRepo');
+        state.set('selection', undefined);
+    }
+    recall(state);
 };
-(async() => {
+
+const recall = async(state) => {
     try {
-        const w = wire(conf);
-        const currentState = state(w);
-        currentState.init({tree: await w.tree()});
-        currentState.get('tree')
-            .map(({name, tags, manifests, ...rest}, idx) => {
-                if (tags && tags.length) {
-                    tags.map((tag) => console.log(`${idx + 1}. ${name}:${tag}`));
-                } else {
-                    console.log(`${idx + 1}. EMPTY ${name}`);
-                }
-            });
-        // await (w.manifests({
-        //     repo: 'impl-mfactor-demo',
-        //     tag: 'latest-1',
-        //     arch: 'amd64'
-        // })).delete();
+        if (!stateMap[state.get('step')]) {
+            throw new Error('not.implemented');
+        }
+        await stateMap[state.get('step')](state);
     } catch (e) {
         console.error(e);
     }
+};
 
-    // repo
-    //     .map((r) => console.table(JSON.stringify(r, null, 4)));
+const stateMap = {
+    selectRepo,
+    selectTag,
+    manifests
+};
+
+(async() => {
+    try {
+        await recall(currentState);
+    } catch (e) {
+        console.error(e);
+    }
 })();

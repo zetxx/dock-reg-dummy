@@ -8,7 +8,10 @@
   },
   "author": "Elin Angelov",
   "license": "GPL-2.0",
+  "type": "module",
   "dependencies": {
-    "rc": "1.2.8"
+    "rc": "1.2.8",
+    "chalk": "5.2.0",
+    "prompt-sync": "4.2.0"
   }
 }
