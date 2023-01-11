@@ -1,0 +1,6 @@
+{
+    "registry": {
+        "endpoint": "protocol://a.b.c",
+        "auth": "basic auth(user:password)"
+    }
+}

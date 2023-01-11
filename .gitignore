@@ -1,0 +1,3 @@
+.dock-reg-dummyrc
+node_modules/**/*
+.vscode/**/*
